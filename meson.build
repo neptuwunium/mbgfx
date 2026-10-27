@@ -7,6 +7,7 @@ project(
         'optimization=2',
         'warning_level=0',
     ],
+    meson_version: '>= 1.1',
 )
 
 if host_machine.system() == 'Linux'
@@ -56,7 +57,13 @@ if host_machine.system() == 'darwin'
     bgfx_args += '-xobjective-c++'
 endif
 
-bgfx_lib = static_library(
+bgfx_lib_args = []
+if get_option('default_library') == 'shared'
+    bgfx_args += '-DBGFX_SHARED_LIB_BUILD'
+    bgfx_lib_args += ['-DBGFX_SHARED_LIB_USE']
+endif
+
+bgfx_lib = library(
     'bgfx',
     sources,
     include_directories: 'include',
@@ -67,6 +74,7 @@ bgfx_lib = static_library(
 bgfx_dep = declare_dependency(
     link_with: bgfx_lib,
     include_directories: 'include',
+    compile_args: bgfx_lib_args,
 )
 
 meson.override_dependency('bgfx', bgfx_dep)
