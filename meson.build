@@ -48,10 +48,6 @@ else
 endif
 bgfx_args = []
 
-if host_machine.system() == 'linux' and get_option('with_wayland')
-    bgfx_args += '-DWL_EGL_PLATFORM=1'
-endif
-
 if host_machine.system() == 'darwin'
     bgfx_args += '-xobjective-c++'
 endif
