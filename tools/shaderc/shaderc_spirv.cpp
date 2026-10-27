@@ -672,6 +672,7 @@ namespace bgfx { namespace spirv
 				}
 
 				UniformArray uniforms;
+				bool implicitUniform = false;
 
 				{
 					uint16_t count = (uint16_t)program->getNumLiveUniformVariables();
@@ -683,6 +684,19 @@ namespace bgfx { namespace spirv
 
 						if (bx::hasSuffix(un.name.c_str(), ".@data") )
 						{
+							continue;
+						}
+
+						const int32_t blockIndex = program->getUniformBlockIndex(ii);
+
+						if (0 <= blockIndex
+						&&  0 != bx::strCmp(program->getUniformBlockName(blockIndex), "UniformBlock") )
+						{
+							bx::write(_messageWriter, &messageErr
+								, "Error: Global '%s' is implicitly a uniform. Declare it 'static const', or make it a local variable.\n"
+								, un.name.c_str()
+								);
+							implicitUniform = true;
 							continue;
 						}
 
@@ -754,13 +768,18 @@ namespace bgfx { namespace spirv
 				spvtools::ValidatorOptions validatorOptions;
 				validatorOptions.SetBeforeHlslLegalization(true);
 
-				if (!opt.Run(
-					  spirv.data()
-					, spirv.size()
-					, &spirv
-					, validatorOptions
-					, false
-					) )
+				const bool optimized = true
+					&& !implicitUniform
+					&& opt.Run(
+						  spirv.data()
+						, spirv.size()
+						, &spirv
+						, validatorOptions
+						, false
+						)
+					;
+
+				if (!optimized)
 				{
 					compiled = false;
 				}

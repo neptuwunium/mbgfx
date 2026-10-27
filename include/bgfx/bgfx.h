@@ -669,8 +669,10 @@ namespace bgfx
 		                                        ///      and written to.
 		                                        ///    - `BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER` - Texture format can be used as frame
 		                                        ///      buffer.
-		                                        ///    - `BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA` - Texture format can be used as MSAA
-		                                        ///      frame buffer.
+		                                        ///    - `BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X2`, `_X4`, `_X8`, `_X16` - Texture
+		                                        ///      format can be used as MSAA frame buffer with that many samples. A
+		                                        ///      `BGFX_TEXTURE_RT_MSAA_X*` request is clamped to the highest one set.
+		                                        ///      `BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA` is the mask of all of them.
 		                                        ///    - `BGFX_CAPS_FORMAT_TEXTURE_MSAA` - Texture can be sampled as MSAA.
 		                                        ///    - `BGFX_CAPS_FORMAT_TEXTURE_MIP_AUTOGEN` - Texture format supports auto-generated
 		                                        ///      mips.
@@ -4429,7 +4431,7 @@ namespace bgfx
 	/// @param[in] _num Number of elements. Passing `UINT16_MAX` will
 	///   use the _num passed on uniform creation.
 	///
-	/// @attention Uniform must be created with `bgfx::UniformFreq::View` argument.
+	/// @attention Uniform must be created with `bgfx::UniformFreq::Frame` argument.
 	///
 	/// @attention C99's equivalent binding is `bgfx_set_frame_uniform`.
 	///

@@ -723,7 +723,7 @@ namespace bgfx { namespace wgpu
 
 			if (multisample)
 			{
-				caps |= BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA
+				caps |= BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X4
 					 |  BGFX_CAPS_FORMAT_TEXTURE_MSAA
 					 ;
 			}
@@ -1302,6 +1302,11 @@ WGPU_IMPORT
 
 					BX_TRACE("");
 
+					const char* disabledToggles[] =
+					{
+						"timestamp_quantization",
+					};
+
 					WGPUDawnTogglesDescriptor dawnTogglesDescriptor =
 					{
 						.chain =
@@ -1311,8 +1316,8 @@ WGPU_IMPORT
 						},
 						.enabledToggleCount  = enabledTogglesCount,
 						.enabledToggles      = enabledToggles,
-						.disabledToggleCount = 0,
-						.disabledToggles     = NULL,
+						.disabledToggleCount = BX_COUNTOF(disabledToggles),
+						.disabledToggles     = disabledToggles,
 					};
 #endif // !BX_PLATFORM_EMSCRIPTEN
 
@@ -2372,6 +2377,7 @@ WGPU_IMPORT
 			const uint32_t height = frameBuffer.m_height;
 
 			frameBuffer.m_needPresent = true;
+			frameBuffer.m_swapChain.acquire();
 
 			float proj[16];
 			bx::mtxOrtho(proj, 0.0f, (float)width, (float)height, 0.0f, 0.0f, 1000.0f, 0.0f, false);
@@ -2661,6 +2667,323 @@ WGPU_IMPORT
 			wgpuRelease(renderPassEncoder);
 
 			release(bindGroup);
+			wgpuRelease(depthView);
+		}
+
+		RenderPipeline* getDepthUploadPipeline(WGPUTextureFormat _format)
+		{
+			bx::HashMurmur3 murmur;
+			murmur.begin();
+			murmur.add("bgfx_depthUpload", 16);
+			murmur.add(_format);
+			const uint32_t hash = murmur.end();
+
+			RenderPipeline* renderPipeline = m_renderPipelineCache.find(hash);
+
+			if (NULL == renderPipeline)
+			{
+				static const char s_wgsl[] =
+					"@group(0) @binding(0) var s_src : texture_2d<f32>;\n"
+					"\n"
+					"@vertex fn vs(@builtin(vertex_index) _id : u32) -> @builtin(position) vec4f\n"
+					"{\n"
+					"\treturn vec4f(select(-1.0, 3.0, 1u == _id), select(-1.0, 3.0, 2u == _id), 0.0, 1.0);\n"
+					"}\n"
+					"\n"
+					"@fragment fn fs(@builtin(position) _pos : vec4f) -> @builtin(frag_depth) f32\n"
+					"{\n"
+					"\treturn textureLoad(s_src, vec2i(_pos.xy), 0).x;\n"
+					"}\n"
+					;
+
+				WGPUShaderSourceWGSL shaderSourceWgsl =
+				{
+					.chain =
+					{
+						.next  = NULL,
+						.sType = WGPUSType_ShaderSourceWGSL,
+					},
+					.code =
+					{
+						.data   = s_wgsl,
+						.length = sizeof(s_wgsl) - 1,
+					},
+				};
+
+				const WGPUShaderModuleDescriptor shaderModuleDesc =
+				{
+					.nextInChain = &shaderSourceWgsl.chain,
+					.label       = WGPU_STRING_VIEW_INIT,
+				};
+
+				WGPUShaderModule module = WGPU_CHECK(wgpuDeviceCreateShaderModule(m_device, &shaderModuleDesc) );
+
+				WGPUBindGroupLayoutEntry entry;
+				initTextureBinding(entry
+					, 0
+					, WGPUShaderStage_Fragment
+					, WGPUTextureSampleType_UnfilterableFloat
+					, WGPUTextureViewDimension_2D
+					, false
+					);
+
+				const WGPUBindGroupLayoutDescriptor bindGroupLayoutDesc =
+				{
+					.nextInChain = NULL,
+					.label       = WGPU_STRING_VIEW_INIT,
+					.entryCount  = 1,
+					.entries     = &entry,
+				};
+
+				WGPUBindGroupLayout bindGroupLayout = WGPU_CHECK(wgpuDeviceCreateBindGroupLayout(m_device, &bindGroupLayoutDesc) );
+
+				const WGPUPipelineLayoutDescriptor pipelineLayoutDesc =
+				{
+					.nextInChain          = NULL,
+					.label                = WGPU_STRING_VIEW_INIT,
+					.bindGroupLayoutCount = 1,
+					.bindGroupLayouts     = &bindGroupLayout,
+					.immediateSize        = 0,
+				};
+
+				WGPUPipelineLayout pipelineLayout = WGPU_CHECK(wgpuDeviceCreatePipelineLayout(m_device, &pipelineLayoutDesc) );
+
+				const WGPUStencilFaceState stencilFace =
+				{
+					.compare     = WGPUCompareFunction_Always,
+					.failOp      = WGPUStencilOperation_Keep,
+					.depthFailOp = WGPUStencilOperation_Keep,
+					.passOp      = WGPUStencilOperation_Keep,
+				};
+
+				const WGPUDepthStencilState depthStencilState =
+				{
+					.nextInChain         = NULL,
+					.format              = _format,
+					.depthWriteEnabled   = WGPUOptionalBool_True,
+					.depthCompare        = WGPUCompareFunction_Always,
+					.stencilFront        = stencilFace,
+					.stencilBack         = stencilFace,
+					.stencilReadMask     = 0,
+					.stencilWriteMask    = 0,
+					.depthBias           = 0,
+					.depthBiasSlopeScale = 0.0f,
+					.depthBiasClamp      = 0.0f,
+				};
+
+				const WGPUFragmentState fragmentState =
+				{
+					.nextInChain   = NULL,
+					.module        = module,
+					.entryPoint    = WGPU_STRING_VIEW_INIT,
+					.constantCount = 0,
+					.constants     = NULL,
+					.targetCount   = 0,
+					.targets       = NULL,
+				};
+
+				const WGPURenderPipelineDescriptor renderPipelineDesc =
+				{
+					.nextInChain = NULL,
+					.label       = WGPU_STRING_VIEW_INIT,
+					.layout      = pipelineLayout,
+					.vertex =
+					{
+						.nextInChain   = NULL,
+						.module        = module,
+						.entryPoint    = WGPU_STRING_VIEW_INIT,
+						.constantCount = 0,
+						.constants     = NULL,
+						.bufferCount   = 0,
+						.buffers       = NULL,
+					},
+					.primitive =
+					{
+						.nextInChain      = NULL,
+						.topology         = WGPUPrimitiveTopology_TriangleList,
+						.stripIndexFormat = WGPUIndexFormat_Undefined,
+						.frontFace        = WGPUFrontFace_CCW,
+						.cullMode         = WGPUCullMode_None,
+						.unclippedDepth   = false,
+					},
+					.depthStencil = &depthStencilState,
+					.multisample =
+					{
+						.nextInChain            = NULL,
+						.count                  = 1,
+						.mask                   = UINT32_MAX,
+						.alphaToCoverageEnabled = false,
+					},
+					.fragment = &fragmentState,
+				};
+
+				const WGPURenderPipeline pipeline = WGPU_CHECK(wgpuDeviceCreateRenderPipeline(m_device, &renderPipelineDesc) );
+
+				renderPipeline = m_renderPipelineCache.add(
+					  hash
+					, {
+						.bindGroupLayout = bindGroupLayout,
+						.pipeline        = pipeline,
+					}
+					, 0
+					);
+
+				wgpuRelease(pipelineLayout);
+				wgpuRelease(module);
+			}
+
+			return renderPipeline;
+		}
+
+		void beginDepthPass(const TextureWGPU& _texture, uint32_t _mip, uint32_t _layer, WGPULoadOp _loadOp, WGPUTextureView& _outView, WGPURenderPassEncoder& _outEncoder)
+		{
+			const WGPUTextureViewDescriptor textureViewDesc =
+			{
+				.nextInChain     = NULL,
+				.label           = WGPU_STRING_VIEW_INIT,
+				.format          = _texture.m_fmt,
+				.dimension       = WGPUTextureViewDimension_2D,
+				.baseMipLevel    = _mip,
+				.mipLevelCount   = 1,
+				.baseArrayLayer  = _layer,
+				.arrayLayerCount = 1,
+				.aspect          = WGPUTextureAspect_DepthOnly,
+				.usage           = WGPUTextureUsage_RenderAttachment,
+			};
+
+			_outView = WGPU_CHECK(wgpuTextureCreateView(_texture.m_texture, &textureViewDesc) );
+
+			const WGPURenderPassDepthStencilAttachment depthStencilAttachment =
+			{
+				.nextInChain       = NULL,
+				.view              = _outView,
+				.depthLoadOp       = _loadOp,
+				.depthStoreOp      = WGPUStoreOp_Store,
+				.depthClearValue   = 0.0f,
+				.depthReadOnly     = false,
+				.stencilLoadOp     = WGPULoadOp_Undefined,
+				.stencilStoreOp    = WGPUStoreOp_Undefined,
+				.stencilClearValue = 0,
+				.stencilReadOnly   = false,
+			};
+
+			const WGPURenderPassDescriptor renderPassDesc =
+			{
+				.nextInChain            = NULL,
+				.label                  = WGPU_STRING_VIEW_INIT,
+				.colorAttachmentCount   = 0,
+				.colorAttachments       = NULL,
+				.depthStencilAttachment = &depthStencilAttachment,
+				.occlusionQuerySet      = NULL,
+				.timestampWrites        = NULL,
+			};
+
+			_outEncoder = WGPU_CHECK(wgpuCommandEncoderBeginRenderPass(m_cmd.m_commandEncoder, &renderPassDesc) );
+		}
+
+		void writeDepth(const TextureWGPU& _texture, uint32_t _mip, uint32_t _layer, uint32_t _x, uint32_t _y, uint32_t _width, uint32_t _height, const float* _data)
+		{
+			const uint32_t mipWidth  = bx::max<uint32_t>(1, _texture.m_width  >> _mip);
+			const uint32_t mipHeight = bx::max<uint32_t>(1, _texture.m_height >> _mip);
+
+			const WGPUTextureDescriptor stagingDesc =
+			{
+				.nextInChain = NULL,
+				.label       = WGPU_STRING_VIEW_INIT,
+				.usage       = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
+				.dimension   = WGPUTextureDimension_2D,
+				.size =
+				{
+					.width              = mipWidth,
+					.height             = mipHeight,
+					.depthOrArrayLayers = 1,
+				},
+				.format          = WGPUTextureFormat_R32Float,
+				.mipLevelCount   = 1,
+				.sampleCount     = 1,
+				.viewFormatCount = 0,
+				.viewFormats     = NULL,
+			};
+
+			WGPUTexture staging = WGPU_CHECK(wgpuDeviceCreateTexture(m_device, &stagingDesc) );
+
+			m_cmd.writeTexture(
+				{
+					.texture  = staging,
+					.mipLevel = 0,
+					.origin =
+					{
+						.x = _x,
+						.y = _y,
+						.z = 0,
+					},
+					.aspect = WGPUTextureAspect_All,
+				}
+				, _data
+				, _width*_height*sizeof(float)
+				, {
+					.offset       = 0,
+					.bytesPerRow  = _width*uint32_t(sizeof(float) ),
+					.rowsPerImage = _height,
+				}
+				, {
+					.width              = _width,
+					.height             = _height,
+					.depthOrArrayLayers = 1,
+				});
+
+			WGPUTextureView stagingView = WGPU_CHECK(wgpuTextureCreateView(staging, NULL) );
+
+			const RenderPipeline& renderPipeline = *getDepthUploadPipeline(_texture.m_fmt);
+
+			const WGPUBindGroupEntry bindGroupEntry =
+			{
+				.nextInChain = NULL,
+				.binding     = 0,
+				.buffer      = NULL,
+				.offset      = 0,
+				.size        = 0,
+				.sampler     = NULL,
+				.textureView = stagingView,
+			};
+
+			const WGPUBindGroupDescriptor bindGroupDesc =
+			{
+				.nextInChain = NULL,
+				.label       = WGPU_STRING_VIEW_INIT,
+				.layout      = renderPipeline.bindGroupLayout,
+				.entryCount  = 1,
+				.entries     = &bindGroupEntry,
+			};
+
+			WGPUBindGroup bindGroup = WGPU_CHECK(wgpuDeviceCreateBindGroup(m_device, &bindGroupDesc) );
+
+			WGPUTextureView depthView;
+			WGPURenderPassEncoder renderPassEncoder;
+			beginDepthPass(_texture, _mip, _layer, WGPULoadOp_Load, depthView, renderPassEncoder);
+
+			WGPU_CHECK(wgpuRenderPassEncoderSetPipeline(renderPassEncoder, renderPipeline.pipeline) );
+			WGPU_CHECK(wgpuRenderPassEncoderSetBindGroup(renderPassEncoder, 0, bindGroup, 0, NULL) );
+			WGPU_CHECK(wgpuRenderPassEncoderSetScissorRect(renderPassEncoder, _x, _y, _width, _height) );
+			WGPU_CHECK(wgpuRenderPassEncoderDraw(renderPassEncoder, 3, 1, 0, 0) );
+			WGPU_CHECK(wgpuRenderPassEncoderEnd(renderPassEncoder) );
+
+			wgpuRelease(renderPassEncoder);
+			wgpuRelease(depthView);
+			wgpuRelease(bindGroup);
+			wgpuRelease(stagingView);
+			wgpuRelease(staging);
+		}
+
+		void clearDepth(const TextureWGPU& _texture, uint32_t _mip, uint32_t _layer)
+		{
+			WGPUTextureView depthView;
+			WGPURenderPassEncoder renderPassEncoder;
+			beginDepthPass(_texture, _mip, _layer, WGPULoadOp_Clear, depthView, renderPassEncoder);
+
+			WGPU_CHECK(wgpuRenderPassEncoderEnd(renderPassEncoder) );
+
+			wgpuRelease(renderPassEncoder);
 			wgpuRelease(depthView);
 		}
 
@@ -2957,11 +3280,6 @@ WGPU_IMPORT
 				)
 			{
 				flags &= ~BGFX_RESET_INTERNAL_FORCE;
-
-				if (m_backBuffer.m_swapChain.m_nwh != m_mainSwapChain.nwh)
-				{
-					m_backBuffer.m_swapChain.m_nwh = m_mainSwapChain.nwh;
-				}
 
 				m_mainSwapChain = _swapChain;
 				m_reset = flags;
@@ -3426,7 +3744,7 @@ WGPU_IMPORT
 					}
 					else
 					{
-						elem->format = WGPUVertexFormat_Float32x3;
+						elem->format = WGPUVertexFormat_Unorm8x4;
 						elem->offset = 0;
 					}
 
@@ -3490,8 +3808,8 @@ WGPU_IMPORT
 			if (0 < numVertexStreams
 			&&  UINT32_MAX != _streamMask)
 			{
-				const uint8_t firstStream = BitMaskToIndexIteratorT(_streamMask).idx;
-				const uint16_t layoutIdx = isValid(_stream[firstStream].m_layoutHandle)
+				const uint8_t firstStream = bx::BitMaskToIndexIteratorT(_streamMask).getIndex();
+				const uint16_t layoutIdx  = isValid(_stream[firstStream].m_layoutHandle)
 					? _stream[firstStream].m_layoutHandle.idx
 					: m_vertexBuffers[_stream[firstStream].m_handle.idx].m_layoutHandle.idx
 					;
@@ -3533,9 +3851,9 @@ WGPU_IMPORT
 
 			if (UINT32_MAX != _streamMask)
 			{
-				for (BitMaskToIndexIteratorT it(_streamMask); !it.isDone(); it.next() )
+				for (bx::BitMaskToIndexIteratorT it(_streamMask); !it.isDone(); it.next() )
 				{
-					const uint8_t idx = it.idx;
+					const uint8_t idx = it.getIndex();
 
 					uint16_t handle = _stream[idx].m_handle.idx;
 					const VertexBufferWGPU& vb = m_vertexBuffers[handle];
@@ -3590,12 +3908,12 @@ WGPU_IMPORT
 
 				if (UINT32_MAX != _streamMask)
 				{
-					for (BitMaskToIndexIteratorT it(_streamMask)
+					for (bx::BitMaskToIndexIteratorT it(_streamMask)
 						; !it.isDone()
 						; it.next(), numStreams++
 						)
 					{
-						const uint8_t idx = it.idx;
+						const uint8_t idx = it.getIndex();
 
 						const uint16_t handle = _stream[idx].m_handle.idx;
 						const VertexBufferWGPU& vb = m_vertexBuffers[handle];
@@ -4845,6 +5163,45 @@ WGPU_IMPORT
 			;
 	}
 
+	static bool isDepthDrawUpload(WGPUTextureFormat _format)
+	{
+		return WGPUTextureFormat_Depth32Float == _format;
+	}
+
+	static float* depthToFloat(const uint8_t* _src, uint32_t _width, uint32_t _height, uint32_t _srcPitch, TextureFormat::Enum _format)
+	{
+		float* dst = (float*)bx::alloc(g_allocator, _width*_height*sizeof(float) );
+
+		for (uint32_t yy = 0; yy < _height; ++yy)
+		{
+			const uint8_t* src = &_src[yy*_srcPitch];
+
+			for (uint32_t xx = 0; xx < _width; ++xx)
+			{
+				float depth;
+
+				switch (_format)
+				{
+				case TextureFormat::D16F:
+					depth = bx::halfToFloat( ( (const uint16_t*)src)[xx]);
+					break;
+
+				case TextureFormat::D32:
+					depth = float(double( ( (const uint32_t*)src)[xx]) / 4294967295.0);
+					break;
+
+				default:
+					bx::memCopy(&depth, &src[xx*sizeof(float)], sizeof(float) );
+					break;
+				}
+
+				dst[yy*_width + xx] = depth;
+			}
+		}
+
+		return dst;
+	}
+
 	void TextureWGPU::create(const Memory* _mem, uint64_t _flags, uint8_t _skip)
 	{
 		bimg::ImageContainer imageContainer;
@@ -4924,10 +5281,8 @@ WGPU_IMPORT
 				;
 			const bool blit         = 0 != (m_flags&BGFX_TEXTURE_BLIT_DST);
 
-			const uint32_t msaaQuality = bx::satSub<uint32_t>(uint32_t( (m_flags & BGFX_TEXTURE_RT_MSAA_MASK) >> BGFX_TEXTURE_RT_MSAA_SHIFT ), 1u);
-
 			m_msaaCount = 1 == depthOrArrayLayers && WGPUTextureDimension_2D == dimension
-				? s_msaa[msaaQuality]
+				? getTextureMsaaSamples(TextureFormat::Enum(m_textureFormat), m_flags)
 				: 1
 				;
 
@@ -4992,7 +5347,7 @@ WGPU_IMPORT
 						| (!writeOnly   ? WGPUTextureUsage_CopyDst          : 0)
 						| (blit         ? WGPUTextureUsage_CopyDst          : 0)
 						| (computeWrite ? WGPUTextureUsage_StorageBinding   : 0)
-						| (renderTarget ? WGPUTextureUsage_RenderAttachment : 0)
+						| (renderTarget || isDepthDrawUpload(m_fmt) ? WGPUTextureUsage_RenderAttachment : 0)
 					,
 				.dimension = dimension,
 				.size =
@@ -5053,7 +5408,13 @@ WGPU_IMPORT
 					bimg::ImageMip mip;
 					if (bimg::imageGetRawData(imageContainer, side, lod+startLod, _mem->data, _mem->size, mip) )
 					{
-						if (convert)
+						if (isDepthDrawUpload(m_fmt) )
+						{
+							float* depth = depthToFloat(mip.m_data, mip.m_width, mip.m_height, mip.m_width*mip.m_bpp/8, TextureFormat::Enum(m_requestedFormat) );
+							s_renderWGPU->writeDepth(*this, lod, side, 0, 0, mip.m_width, mip.m_height, depth);
+							bx::free(g_allocator, depth);
+						}
+						else if (convert)
 						{
 							const uint32_t bytesPerRow = mip.m_width*bpp/8;
 							const uint32_t width       = bx::max<uint32_t>(m_width  >> lod, 1);
@@ -5184,6 +5545,12 @@ WGPU_IMPORT
 
 			for (uint32_t slice = _layer, sliceEnd = _layer + numSlices; slice < sliceEnd; ++slice)
 			{
+				if (isDepthDrawUpload(m_fmt) )
+				{
+					s_renderWGPU->clearDepth(*this, mip, slice);
+					continue;
+				}
+
 				for (uint32_t yy = 0; yy < mipH; yy += tileDim)
 				{
 					const uint32_t th = bx::min<uint32_t>(tileDim, mipH - yy);
@@ -5262,6 +5629,20 @@ WGPU_IMPORT
 		const uint32_t originZ = TextureWGPU::TextureCube == m_type ? _z*6 + _side : _z;
 
 		const uint32_t rowsPerImage = bx::max(1u, (height + blockInfo.blockHeight - 1)/blockInfo.blockHeight);
+
+		if (isDepthDrawUpload(m_fmt) )
+		{
+			float* depthData = depthToFloat(srcData, width, height, bytesPerRow, TextureFormat::Enum(m_requestedFormat) );
+			s_renderWGPU->writeDepth(*this, _mip, originZ, _rect.m_x, _rect.m_y, width, height, depthData);
+			bx::free(g_allocator, depthData);
+
+			if (NULL != temp)
+			{
+				bx::free(g_allocator, temp);
+			}
+
+			return;
+		}
 
 		s_renderWGPU->m_cmd.writeTexture(
 			{
@@ -5607,6 +5988,7 @@ WGPU_IMPORT
 		wgpuRelease(m_textureView);
 		wgpuRelease(m_texture);
 
+#if !BX_PLATFORM_EMSCRIPTEN
 		WGPUSurfaceTexture surfaceTexture = WGPU_SURFACE_TEXTURE_INIT;
 		WGPU_CHECK(wgpuSurfaceGetCurrentTexture(m_surface, &surfaceTexture) );
 
@@ -5618,6 +6000,7 @@ WGPU_IMPORT
 
 		m_texture     = surfaceTexture.texture;
 		m_textureView = createTextureView();
+#endif // !BX_PLATFORM_EMSCRIPTEN
 
 		const uint32_t msaa = s_msaa[(_desc.flags&BGFX_SWAP_CHAIN_MSAA_MASK)>>BGFX_SWAP_CHAIN_MSAA_SHIFT];
 
@@ -5745,7 +6128,21 @@ WGPU_IMPORT
 
 	void SwapChainWGPU::update(void* _nwh, const SwapChain& _desc)
 	{
-		BX_UNUSED(_nwh);
+		if (NULL != _nwh
+		&& (m_nwh != _nwh || NULL == m_surface) )
+		{
+			if (NULL != m_surface)
+			{
+				destroy();
+			}
+
+			if (!createSurface(_nwh) )
+			{
+				m_descPending             = _desc;
+				m_needToRecreateSwapChain = true;
+				return;
+			}
+		}
 
 		wgpuRelease(m_textureView);
 		wgpuRelease(m_msaaTextureView);
@@ -5966,13 +6363,13 @@ WGPU_IMPORT
 		return textureView;
 	}
 
-	void SwapChainWGPU::present()
+	void SwapChainWGPU::acquire()
 	{
-		wgpuRelease(m_textureView);
-		wgpuRelease(m_texture);
-#if !BX_PLATFORM_EMSCRIPTEN
-		WGPU_CHECK(wgpuSurfacePresent(m_surface) );
-#endif // !BX_PLATFORM_EMSCRIPTEN
+		if (NULL != m_texture
+		||  NULL == m_surface)
+		{
+			return;
+		}
 
 		WGPUSurfaceTexture surfaceTexture = WGPU_SURFACE_TEXTURE_INIT;
 		wgpuSurfaceGetCurrentTexture(m_surface, &surfaceTexture);
@@ -6003,6 +6400,17 @@ WGPU_IMPORT
 		{
 			m_textureView = createTextureView();
 		}
+	}
+
+	void SwapChainWGPU::present()
+	{
+		wgpuRelease(m_textureView);
+		wgpuRelease(m_texture);
+
+#if !BX_PLATFORM_EMSCRIPTEN
+		WGPU_CHECK(wgpuSurfacePresent(m_surface) );
+		acquire();
+#endif // !BX_PLATFORM_EMSCRIPTEN
 	}
 
 	void FrameBufferWGPU::create(uint8_t _num, const Attachment* _attachment)
@@ -6133,7 +6541,7 @@ WGPU_IMPORT
 
 	void FrameBufferWGPU::update(const SwapChain& _desc)
 	{
-		m_swapChain.update(m_swapChain.m_nwh, _desc);
+		m_swapChain.update(_desc.nwh, _desc);
 		m_width  = _desc.width;
 		m_height = _desc.height;
 		m_formatDepthStencil = m_swapChain.m_formatDepthStencil;
@@ -6205,15 +6613,23 @@ WGPU_IMPORT
 
 	WGPUCommandEncoder CommandQueueWGPU::alloc()
 	{
-		s_renderWGPU->m_uniformScratchBuffer.flush();
-
-		kick();
+		if (++m_numPasses >= kPassesPerKick)
+		{
+			kick();
+		}
 
 		return m_commandEncoder;
 	}
 
 	void CommandQueueWGPU::kick()
 	{
+		m_numPasses = 0;
+
+		if (0 != s_renderWGPU->m_uniformScratchBuffer.m_chunkPos)
+		{
+			s_renderWGPU->m_uniformScratchBuffer.flush();
+		}
+
 		WGPUCommandBuffer commandBuffer = WGPU_CHECK(wgpuCommandEncoderFinish(m_commandEncoder, NULL) );
 
 		WGPU_CHECK(wgpuQueueSubmit(m_queue, 1, &commandBuffer) );
@@ -7136,6 +7552,16 @@ WGPU_IMPORT
 		WGPU_CHECK(wgpuInstanceProcessEvents(s_renderWGPU->m_instance) );
 		m_gpuTimer.resize(getNumTimerQueries(_render, m_gpuTimer.m_control.getSize() ) );
 
+#if BX_PLATFORM_EMSCRIPTEN
+		// Canvas texture may expire once the acquiring task ends, and flip is skipped after BGFX_FRAME_FLUSH.
+		for (uint16_t ii = 0; ii < m_numWindows; ++ii)
+		{
+			SwapChainWGPU& swapChain = getFrameBuffer(m_windows[ii]).m_swapChain;
+			wgpuRelease(swapChain.m_textureView);
+			wgpuRelease(swapChain.m_texture);
+		}
+#endif // BX_PLATFORM_EMSCRIPTEN
+
 		if (updateResolution(_render->m_mainSwapChain, _render->m_reset) )
 		{
 			return;
@@ -7380,6 +7806,7 @@ WGPU_IMPORT
 					if (isSwapChain)
 					{
 						fb.m_needPresent = true;
+						fb.m_swapChain.acquire();
 					}
 
 					WGPUTextureView depthStencilTextureView = isSwapChain
@@ -7624,6 +8051,7 @@ WGPU_IMPORT
 
 						programChanged =
 							constantsChanged = true;
+						hasPredefined = 0 < m_program[currentProgram.idx].m_numPredefined;
 					}
 
 					const ProgramWGPU& program = m_program[currentProgram.idx];
@@ -8003,12 +8431,12 @@ WGPU_IMPORT
 
 					if (UINT32_MAX != draw.m_streamMask)
 					{
-						for (BitMaskToIndexIteratorT it(draw.m_streamMask)
+						for (bx::BitMaskToIndexIteratorT it(draw.m_streamMask)
 							; !it.isDone()
 							; it.next(), numStreams++
 							)
 						{
-							const uint8_t idx = it.idx;
+							const uint8_t idx = it.getIndex();
 
 							currentState.m_stream[idx].m_layoutHandle = draw.m_stream[idx].m_layoutHandle;
 							currentState.m_stream[idx].m_handle       = draw.m_stream[idx].m_handle;
@@ -8078,9 +8506,9 @@ WGPU_IMPORT
 
 					if (UINT32_MAX == numVertices)
 					{
-						for (BitMaskToIndexIteratorT it(currentState.m_streamMask); !it.isDone(); it.next() )
+						for (bx::BitMaskToIndexIteratorT it(currentState.m_streamMask); !it.isDone(); it.next() )
 						{
-							const uint8_t idx = it.idx;
+							const uint8_t idx = it.getIndex();
 							const VertexBufferWGPU& vb = m_vertexBuffers[currentState.m_stream[idx].m_handle.idx];
 							const uint16_t decl = isValid(draw.m_stream[idx].m_layoutHandle) ? draw.m_stream[idx].m_layoutHandle.idx : vb.m_layoutHandle.idx;
 							const VertexLayout& layout = m_vertexLayouts[decl];
