@@ -1,11 +1,4 @@
 option(
-'with_wayland',
-type: 'boolean',
-value: true,
-description: 'Allows Wayland to use Vulkan, however prevents X11 from using Vulkan'
-)
-
-option(
 'build_tools',
 type: 'boolean',
 value: true,
