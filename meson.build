@@ -9,11 +9,6 @@ project(
     ],
 )
 
-if host_machine.system() == 'Linux'
-    add_project_arguments('-fPIC', language: 'cpp')
-endif
-
-
 fs = import('fs')
 sources = []
 foreach s : fs.read('sources.txt').strip().split('\n')
@@ -59,6 +54,7 @@ endif
 bgfx_lib = static_library(
     'bgfx',
     sources,
+    pic: host_machine.system() == 'linux',
     include_directories: 'include',
     dependencies: bgfx_deps,
     cpp_args: bgfx_args,
