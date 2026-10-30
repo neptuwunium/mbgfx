@@ -42,7 +42,9 @@ if host_machine.system() == 'darwin'
 else
     bgfx_deps += dependency('gl')
 endif
-bgfx_args = []
+
+cpp = meson.get_compiler('cpp')
+bgfx_args = cpp.get_supported_arguments('-Wno-gnu-zero-variadic-macro-arguments')
 
 if host_machine.system() == 'darwin'
     bgfx_args += '-xobjective-c++'

@@ -1,5 +1,8 @@
 project('dawn', 'cpp')
 
+cpp = meson.get_compiler('cpp')
+compile_opts = cpp.get_supported_arguments('-Wnodeprecated-declarations')
+
 dawn_lib = static_library(
     'dawn',
     [
@@ -394,6 +397,7 @@ dawn_lib = static_library(
     include_directories: ['include'],
     override_options: ['unity=off'],
     dependencies: [dependency('spirv-headers'), dependency('spirv-tools')],
+    cpp_args: compile_opts,
 )
 
 dawn_dep = declare_dependency(
